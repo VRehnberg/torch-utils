@@ -29,8 +29,10 @@ def kmeans(points, k, global_start=1):
         distances, i_cluster = distances.min(-1)
         i_cluster = i_cluster.unsqueeze(2).tile((1, 1, emb_dim))
         
-        # Remove duplicate parallel searches
-        i_cluster = torch.unique(i_cluster, dim=0)
+        ## Remove duplicate parallel searches
+        #i_cluster, ix = torch.unique(i_cluster, dim=0, return_index=True)
+        #points = points[ix, :, :]
+        #centroids = centroids[ix, :, :]
         
         # Move centroids
         for i in range(k):
