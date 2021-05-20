@@ -33,7 +33,10 @@ def kmeans(points, k, global_start=1):
         for i in range(k):
             is_in_cluster = (i_cluster == i)
             old_centroids = centroids.clone()
-            centroids[:, i, :] = points[is_in_cluster].mean()
+            centroids[:, i, :] = (
+                (is_in_cluster.float() * points).sum(dim=1)
+                / is_in_cluster[:, :, :1].sum(dim=1)
+            )
 
             # Reinitialize unused centroids
             no_points = (is_in_cluster.sum(1) == 0).nonzero(as_tuple=True)
