@@ -22,12 +22,15 @@ def kmeans(points, k, global_start=1):
     centroids = points[rng_idx].reshape(global_start, *points.shape)[:, :k, :]
     points = points.unsqueeze(0).tile((global_start, 1, 1))
     
-    # Assign to cluster
     converged = False
     while not converged:
+        # Assign to clusters
         distances = (points.unsqueeze(2) - centroids.unsqueeze(1)).pow(2).sum(-1)
         distances, i_cluster = distances.min(-1)
         i_cluster = i_cluster.unsqueeze(2).tile((1, 1, emb_dim))
+        
+        # Remove duplicate parallel searches
+        i_cluster = torch.unique(i_cluster, dim=0)
         
         # Move centroids
         for i in range(k):
