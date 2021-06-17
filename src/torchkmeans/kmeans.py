@@ -19,6 +19,9 @@ def kmeans(
         reinatialize_empty_clusters (bool): If empty clusters are reinitialized.
             Default True.
         verbose (bool): Controls verbosity. Default True. 
+
+    Returns:
+        i_cluster (LongTensor): What cluster each point belongs to.
     '''
     if len(points.shape) > 2:
         raise NotImplementedError("Batches not implemented.")
