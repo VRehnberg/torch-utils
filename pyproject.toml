@@ -1,0 +1,9 @@
+[tool.poetry.dependencies]
+torch = ">=1.8"
+
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
