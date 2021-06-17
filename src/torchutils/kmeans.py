@@ -1,3 +1,4 @@
+import warnings
 import torch
 
 
@@ -29,6 +30,9 @@ def kmeans(
     emb_dim = points.shape[-1]
     n_points = points.shape[0]
     device = points.device
+
+    if n_points < k:
+        raise ValueError(f"Number of clusters ({k}) exceed number of points ({n_points})")
     
     # Initialize centroids randomly from points
     rng_idx = torch.randperm(global_start * n_points, device=device) % n_points
