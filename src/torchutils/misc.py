@@ -40,7 +40,7 @@ def batched_jacobian(func, x, to_embedding=False, **kwargs):
     # Move batch dimension first
     dims = torch.arange(jac.ndim, device=device)
     batch_dim = dims[-x.ndim]
-    jac.movedims(dims[:batch_dim + 1], [batch_dim, *dims[:batch_dim]])
+    jac.movedim(dims[:batch_dim + 1], [batch_dim, *dims[:batch_dim]])
 
     return jac
 
