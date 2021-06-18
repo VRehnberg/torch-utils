@@ -30,17 +30,17 @@ def get_linear_activations(network, x):
     return get_activations(from_module_types=nn.Linear)
 
 
-def batched_jacobian(func, x, to_embedding=False, **kwargs):
+def batched_jacobian(func, x, **kwargs):
     device = x.device
 
-    # Copmute batched Jacobian
+    # Compute batched Jacobian
     new_func = lambda x: func(x).sum(0)
     jac = jacobian(new_func, x, **kwargs)
-    
+
     # Move batch dimension first
     dims = torch.arange(jac.ndim, device=device)
     batch_dim = dims[-x.ndim]
-    jac.movedims(dims[:batch_dim + 1], [batch_dim, *dims[:batch_dim]])
+    jac = jac.movedim(list(dims[:batch_dim + 1]), [batch_dim, *dims[:batch_dim]])
 
     return jac
 
