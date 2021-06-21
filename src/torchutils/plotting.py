@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 def tensorshow(tensor, xdims, ydims, fignum=None):
     assert hasattr(tensor, "names")
-    xydims =  set(xdims).intersection(set(ydims)):
+    xydims =  set(xdims).intersection(set(ydims))
     xdims = [dim + ("x" if dim in xydims else "") for dim in xdims]
     ydims = [dim + ("y" if dim in xydims else "") for dim in ydims]
 

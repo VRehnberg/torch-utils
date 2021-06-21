@@ -2,8 +2,7 @@ import gc
 import torch
 from torch import nn
 from torch.autograd.functional import jacobian
-
-
+    
 def get_activations(network, x, from_module_types=None):
     if from_module_types is None:
         from_module_types = []
