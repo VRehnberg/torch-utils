@@ -2,6 +2,8 @@ import functools
 from collections import Counter, defaultdict
 from functools import partial
 from typing import Callable, Iterable
+from itertools import chain
+from lenses import lens
 
 import torch
 import functorch
@@ -70,14 +72,8 @@ def unify(input, other):
 def lift_nameless(func, out_names=None, **renames):
     def wrapped(*args, **kwargs):
         def traverse(f, input):
-            if isinstance(input, torch.Tensor):
-                f(input)
-            elif isinstance(input, dict):
-                for v in input.values():
-                    traverse(f, v)
-            elif isinstance(input, Iterable) and (input not in input):
-                for i in input:
-                    traverse(f, i)
+            lens.Instance(torch.Tensor).modify(f)(input)
+            lens.Instance(list).Each().modify(partial(traverse, f))(input)
 
         names = out_names
         def strip_name(input):
@@ -90,84 +86,31 @@ def lift_nameless(func, out_names=None, **renames):
         def return_name(input):
             input.rename_(*input._tmp_names)
         
-        traverse(strip_name, (args, kwargs))
+        traverse(strip_name, [args, kwargs])
         output = func(*args, **kwargs)
-        traverse(return_name , (args, kwargs))
+        traverse(return_name, [args, kwargs])
         names = [v for k in names for v in (rename[k] if k in renames else [k])]
         return output.refine_names(*names, ...)
     return wrapped
     
 
-def neinsum(*tensors, **overrides):
-    
+def neinsum(*tensors, **instructions):
     i = -1
     def next_chr():
         nonlocal i
         i += 1
         return chr(97 + i)
 
-    all_names = Counter([name for tensor in tensors for name in tensor.names])
-    instructions = {k: max(1 - v, 0) for k, v in all_names.items()}
-    instructions.update(overrides)
-    name2chr = {} #TODO
-
-    out_names = []
-    ins = len(tensors) * [""]
-    outs = ""
-    name2chr = {}
-    out_uses = Counter()
-    for i_tensor, tensor in enumerate(tensors):
-        for name in tensor.names:
-            instruction = instructions.get(name, 0)
-            if instruction <= 1:
-                name2chr[name] = next_chr()
-    for i_tensor, tensor in enumerate(tensors):
-        for name in tensor.names:
-            this_chr = name2chr.get(name, next_chr())
-            ins[i_tensor] += this_chr
-            instruction = instructions.get(name, 0)
-            if instruction > 0:
-                outs += this_chr
-                out_uses.update([name])
-                uses = out_uses[name]
-                out_names.append(f"{name}{uses if uses > 1 else ''}")
-
-    name2chr = {name: chr(97 + i) for i, name in enumerate(all_names)}
-    names2indices = lambda names: "".join([name2chr[name] for name in names])
-
-    out_name2chr = {
-        f'{name}{i if i > 0 else ""}': chr
-        for name, chr in name2chr.items()
-        for i in range(instructions.get(name, 1))
-    }
-
-    operation = (
-        ",".join(names2indices(tensor.names) for tensor in tensors) +
-        "->" + "".join(out_name2chr.values())
-    )
-
-    return lift_nameless(torch.einsum, out_names=tuple(out_name2chr))(operation, *tensors)
-
-
-def _neinsum(input, other, out_names=None):
-    '''If output_names is None then contract common names.'''
-    
-    assert None not in input.names
-    assert None not in other.names
-
-    if out_names is None:
-        out_names = (
-            [name for name in input.names if name not in other.names]
-             + [name for name in other.names if name not in input.names]
-        )
-    
-    all_names = set(input.names).union(set(other.names))
-    name2chr = {name: chr(97 + i) for i, name in enumerate(all_names)}
-
-    names2indices = lambda names: "".join([name2chr(name) for name in names])
-
-    operation = f"{names2indices(input.names)},{names2indices(other.names)}->{out_names}"
-    
-    output = torch.einsum(operation, )
+    ins = [t.names for t in tensors]
+    cnts = Counter(sum(ins,[]))
+    def foo(name, cnt):
+        nonlocal ins
+        outn = instructions.get(name, max(0,1-cnt))
+        cs = [next_chr() for _ in range(cnt)] if outn > 1 else [next_chr()] * cnt
+        ins = lens.Each().Each().Filter(lambda n: n == name).Parts().set_many(*cs)(ins)
+        yield from zip(cs[:outn],[name+suffix for suffix in ["","1","2","3"]])
+    outs, outnames = zip(*chain(*map(foo, cnts.items())))
+    operation = ",".join(["".join(ns) for ns in ins]) + "->" + "".join(outs)
+    return lift_nameless(torch.einsum, out_names = outnames)(operation, *tensors)
 
 
