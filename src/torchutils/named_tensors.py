@@ -1,10 +1,16 @@
 import functools
 from collections import Counter, defaultdict
+from itertools import starmap
 from functools import partial
-from typing import Callable, Iterable
+from typing import Callable, Generator, Iterable
+from itertools import chain
+from lenses import lens
 
 import torch
 import functorch
+
+
+COMMON_ITERABLES = (tuple, list, Generator, dict)
 
 
 def nmap(mapper, func : Callable, over_dims):
@@ -70,15 +76,16 @@ def unify(input, other):
 def lift_nameless(func, out_names=None, **renames):
     def wrapped(*args, **kwargs):
         def traverse(f, input):
-            if isinstance(input, torch.Tensor):
-                f(input)
-            elif isinstance(input, dict):
-                for v in input.values():
-                    traverse(f, v)
-            elif isinstance(input, Iterable) and (input not in input):
-                for i in input:
-                    traverse(f, i)
-
+            lens.Instance(torch.Tensor).modify(f)(input)
+            try:
+                lens.Instance(COMMON_ITERABLES).Each().modify(partial(traverse, f))(input)
+            except TypeError as e:
+                #TODO
+                if not "dictionary update sequence" in str(e):
+                    print(str(e))
+                    raise
+                print(f"lens raised a TypeError in lift_nameless for function {func.__name__}")
+        
         names = out_names
         def strip_name(input):
             if out_names is None:
@@ -90,15 +97,16 @@ def lift_nameless(func, out_names=None, **renames):
         def return_name(input):
             input.rename_(*input._tmp_names)
         
-        traverse(strip_name, (args, kwargs))
+        traverse(strip_name, [args, kwargs])
         output = func(*args, **kwargs)
-        traverse(return_name , (args, kwargs))
-        names = [v for k in names for v in (rename[k] if k in renames else [k])]
+        traverse(return_name, [args, kwargs])
+        names = [v for k in names for v in (renames[k] if k in renames else [k])]
         return output.refine_names(*names, ...)
+
     return wrapped
     
 
-def neinsum(*tensors, **overrides):
+def neinsum(*tensors, **instructions):
     
     _i_next_chr = -1
     def next_chr():
@@ -106,66 +114,38 @@ def neinsum(*tensors, **overrides):
         _i_next_chr += 1
         return chr(97 + _i_next_chr)
 
-    all_names = Counter([name for tensor in tensors for name in tensor.names])
-    instructions = {k: max(1 - v, 0) for k, v in all_names.items()}
-    instructions.update(overrides)
-    name2chr = {} #TODO
+    ins = [t.names for t in tensors]
+    counts = Counter(chain(*ins))
+    suffixes = [""] + [str(i) for i in range(1, sum(counts.values()))]
+    def yield_outs(name, count):
+        nonlocal ins
+        n_out = instructions.get(name, max(0, 1 - count))
+        cs = [next_chr() for _ in range(count)] if n_out > 1 else [next_chr()] * count
+        ins = lens.Each().Each().Filter(lambda n: n == name).set_many(cs)(ins)
+        yield from zip(cs[:n_out], [name+suffix for suffix in suffixes])
+    outs, outnames = zip(*chain(*starmap(yield_outs, counts.items())))
+    operation = ",".join(["".join(ns) for ns in ins]) + "->" + "".join(outs)
 
-    out_names = []
-    ins = len(tensors) * [""]
-    outs = ""
-    name2chr = {}
-    out_uses = Counter()
-    for i_tensor, tensor in enumerate(tensors):
-        for name in tensor.names:
-            instruction = instructions.get(name, 0)
-            if instruction <= 1:
-                name2chr[name] = next_chr()
-    for i_tensor, tensor in enumerate(tensors):
-        for name in tensor.names:
-            this_chr = name2chr.get(name, next_chr())
-            ins[i_tensor] += this_chr
-            instruction = instructions.get(name, 0)
-            if instruction > 0:
-                outs += this_chr
-                out_uses.update([name])
-                uses = out_uses[name]
-                out_names.append(f"{name}{uses if uses > 1 else ''}")
-
-    name2chr = {name: chr(97 + i) for i, name in enumerate(all_names)}
-    names2indices = lambda names: "".join([name2chr[name] for name in names])
-
-    out_name2chr = {
-        f'{name}{i if i > 0 else ""}': chr
-        for name, chr in name2chr.items()
-        for i in range(instructions.get(name, 1))
-    }
-
-    operation = (
-        ",".join(names2indices(tensor.names) for tensor in tensors) +
-        "->" + "".join(out_name2chr.values())
-    )
-
-    return lift_nameless(torch.einsum, out_names=tuple(out_name2chr))(operation, *tensors)
+    return lift_nameless(torch.einsum, out_names = outnames)(operation, *tensors)
 
 
-def neinsum_(*tensors, out_names=None):
-    '''If output_names is None then contract common names.'''
+def ndiagonal(input, offset=0, **join_names):
+    if len(join_names)==0:
+        return input
     
-    name_counter = Counter([name for tensor in tensors for name in tensor.names])
-    
-    if out_names is None:
-        out_names = [name for name, count in name_counter.items() if count < 2]
-    
-    #TODO 
+    name1 = next(iter(join_names))
+    name2 = join_names.pop(name1)
 
-    all_names = set(input.names).union(set(other.names))
-    name2chr = {name: chr(97 + i) for i, name in enumerate(all_names)}
+    out_names = [name for name in input.names if name not in [name1, name2]] + [name1]
 
-    names2indices = lambda names: "".join([name2chr(name) for name in names])
+    input_names = input.names
+    def get_dim(name):
+        return input_names.index(name)
 
-    operation = f"{names2indices(input.names)},{names2indices(other.names)}->{out_names}"
-    
-    output = torch.einsum(operation, )
+    output = input.diagonal(offset=0, dim1=get_dim(name1), dim2=get_dim(name2)).rename(*out_names)
+    return ndiagonal(output, offset=0, **join_names)
 
 
+def unsqueeze(input, dim, name=None):
+    out_names = input.names[:dim] + (name,) + input.names[dim:]
+    return input.rename(None).unsqueeze(dim).rename(*out_names)
