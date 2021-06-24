@@ -100,11 +100,11 @@ def lift_nameless(func, out_names=None, **renames):
 
 def neinsum(*tensors, **overrides):
     
-    i = -1
+    _i_next_chr = -1
     def next_chr():
-        nonlocal i
-        i += 1
-        return chr(97 + i)
+        nonlocal _i_next_chr
+        _i_next_chr += 1
+        return chr(97 + _i_next_chr)
 
     all_names = Counter([name for tensor in tensors for name in tensor.names])
     instructions = {k: max(1 - v, 0) for k, v in all_names.items()}
@@ -149,18 +149,16 @@ def neinsum(*tensors, **overrides):
     return lift_nameless(torch.einsum, out_names=tuple(out_name2chr))(operation, *tensors)
 
 
-def _neinsum(input, other, out_names=None):
+def neinsum_(*tensors, out_names=None):
     '''If output_names is None then contract common names.'''
     
-    assert None not in input.names
-    assert None not in other.names
-
-    if out_names is None:
-        out_names = (
-            [name for name in input.names if name not in other.names]
-             + [name for name in other.names if name not in input.names]
-        )
+    name_counter = Counter([name for tensor in tensors for name in tensor.names])
     
+    if out_names is None:
+        out_names = [name for name, count in name_counter.items() if count < 2]
+    
+    #TODO 
+
     all_names = set(input.names).union(set(other.names))
     name2chr = {name: chr(97 + i) for i, name in enumerate(all_names)}
 
