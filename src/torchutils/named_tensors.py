@@ -2,7 +2,7 @@ import functools
 from collections import Counter, defaultdict
 from itertools import starmap
 from functools import partial
-from typing import Callable, Generator, Iterable
+from typing import Callable, Iterable
 from itertools import chain
 from lenses import lens
 
@@ -10,7 +10,7 @@ import torch
 import functorch
 
 
-COMMON_ITERABLES = (tuple, list, Generator, dict)
+COMMON_ITERABLES = (tuple, list, dict)
 
 
 def nmap(mapper, func : Callable, over_dims):
@@ -77,14 +77,10 @@ def lift_nameless(func, out_names=None, **renames):
     def wrapped(*args, **kwargs):
         def traverse(f, input):
             lens.Instance(torch.Tensor).modify(f)(input)
-            try:
-                lens.Instance(COMMON_ITERABLES).Each().modify(partial(traverse, f))(input)
-            except TypeError as e:
-                #TODO
-                if not "dictionary update sequence" in str(e):
-                    print(str(e))
-                    raise
-                print(f"lens raised a TypeError in lift_nameless for function {func.__name__}")
+            lens.Fork(
+                lens.Instance((list, tuple)).Each(),
+                lens.Instance(dict).Each()[1],
+            ).modify(partial(traverse, f))(input)
         
         names = out_names
         def strip_name(input):
