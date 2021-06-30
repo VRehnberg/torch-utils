@@ -2,6 +2,7 @@ import functools
 from collections import Counter, defaultdict
 from itertools import starmap
 from functools import partial
+import itertools
 from typing import Callable, Iterable
 from itertools import chain
 from lenses import lens
@@ -83,20 +84,24 @@ def lift_nameless(func, out_names=None, **renames):
             ).modify(partial(traverse, f))(input)
         
         names = out_names
-        def strip_name(input):
+
+        def save_name(input):
             if out_names is None:
                 nonlocal names
                 names = unify(names, input.names)
             input._tmp_names = input.names
+
+        def strip_name(input):
             input.rename_(None)
         
         def return_name(input):
             input.rename_(*input._tmp_names)
         
+        traverse(save_name, [args, kwargs])
         traverse(strip_name, [args, kwargs])
         output = func(*args, **kwargs)
         traverse(return_name, [args, kwargs])
-        names = [v for k in names for v in (renames[k] if k in renames else [k])]
+        names = chain(*(renames.get(k, [k]) for k in names))
         return output.refine_names(*names, ...)
 
     return wrapped
@@ -104,22 +109,19 @@ def lift_nameless(func, out_names=None, **renames):
 
 def neinsum(*tensors, **instructions):
     
-    _i_next_chr = -1
-    def next_chr():
-        nonlocal _i_next_chr
-        _i_next_chr += 1
-        return chr(97 + _i_next_chr)
+    alphabet = (chr(i) for i in itertools.count(97))
 
     ins = [t.names for t in tensors]
-    counts = Counter(chain(*ins))
-    suffixes = [""] + [str(i) for i in range(1, sum(counts.values()))]
-    def yield_outs(name, count):
+    def yield_outs():
         nonlocal ins
-        n_out = instructions.get(name, max(0, 1 - count))
-        cs = [next_chr() for _ in range(count)] if n_out > 1 else [next_chr()] * count
-        ins = lens.Each().Each().Filter(lambda n: n == name).set_many(cs)(ins)
-        yield from zip(cs[:n_out], [name+suffix for suffix in suffixes])
-    outs, outnames = zip(*chain(*starmap(yield_outs, counts.items())))
+        counts = Counter(chain(*ins))
+        suffixes = [""] + [str(i) for i in range(1, sum(counts.values()))]
+        for name, count in counts.items():
+            n_out = instructions.get(name, max(0, 1 - count))
+            cs = list(itertools.islice(alphabet, count)) if n_out > 1 else [next(alphabet)] * count
+            ins = lens.Each().Each().Filter(lambda n: n == name).set_many(cs)(ins)
+            yield from zip(cs[:n_out], [name+suffix for suffix in suffixes])
+    outs, outnames = zip(*yield_outs())
     operation = ",".join(["".join(ns) for ns in ins]) + "->" + "".join(outs)
 
     return lift_nameless(torch.einsum, out_names = outnames)(operation, *tensors)
