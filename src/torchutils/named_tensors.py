@@ -101,8 +101,8 @@ def lift_nameless(func, out_names=None, **renames):
         traverse(strip_name, [args, kwargs])
         output = func(*args, **kwargs)
         traverse(return_name, [args, kwargs])
-        names = chain(*(renames.get(k, [k]) for k in names))
-        return output.refine_names(*names, ...)
+        names = tuple(chain(*(renames.get(k, [k]) for k in names)))
+        return output.refine_names(*names, ...) if isinstance(output, torch.Tensor) else output
 
     return wrapped
     
@@ -124,7 +124,7 @@ def neinsum(*tensors, **instructions):
     outs, outnames = zip(*yield_outs())
     operation = ",".join(["".join(ns) for ns in ins]) + "->" + "".join(outs)
 
-    return lift_nameless(torch.einsum, out_names = outnames)(operation, *tensors)
+    return lift_nameless(torch.einsum, out_names=outnames)(operation, *tensors)
 
 
 def ndiagonal(input, offset=0, **join_names):
@@ -140,8 +140,8 @@ def ndiagonal(input, offset=0, **join_names):
     def get_dim(name):
         return input_names.index(name)
 
-    output = input.diagonal(offset=0, dim1=get_dim(name1), dim2=get_dim(name2)).rename(*out_names)
-    return ndiagonal(output, offset=0, **join_names)
+    output = input.diagonal(offset=offset, dim1=get_dim(name1), dim2=get_dim(name2)).rename(*out_names)
+    return ndiagonal(output, offset=offset, **join_names)
 
 
 def unsqueeze(input, dim, name=None):
