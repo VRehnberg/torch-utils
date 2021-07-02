@@ -1,146 +1,72 @@
-import functools
-from collections import Counter, defaultdict
-from itertools import starmap
-from functools import partial
-import itertools
-from typing import Callable, Iterable
+from functools import partial, wraps
 from itertools import chain
-from lenses import lens
-import opt_einsum
-
+from lenses import lens, bind
 import torch
-import functorch
 
 
-COMMON_ITERABLES = (tuple, list, dict)
+def nstack(*tensors, name=None):
+    return lift_nameless(torch.stack)(tensors, dim=0).refine_names(name, ...)
 
-
-def nmap(mapper, func : Callable, over_dims):
-    over_dims = [over_dims] if not isinstance(over_dims, Iterable) else over_dims
-
-    in_names = None
-    out_names = None
-    @functools.wraps(func)
-    def nfunc(input):
-        nonlocal in_names
-        nonlocal out_names
-        input.names = in_names
-        output = func(input)
-        out_names = output.names
-        return output
-
-    @functools.wraps(nfunc)
-    def vfunc(inputs):
-        inputs = inputs.align_to(*over_dims, ...)
-        over_names = inputs.names[len(over_dims):]
-        in_names = inputs.names[:len(over_dims)]
-        dims = tuple(range(len(over_dims)))
-        outputs = mapper(nfunc, dims, dims)(inputs)
-        outputs.refine_names(*over_names, *out_names)
-        return outputs
-
-    return vfunc
-
-
-def naive_nmap(func: Callable, name):
-    def vfunc(inputs):
-        return nstack(*(
-            func(input) for input in inputs.unbind(name)
-        ), name=name)
-    return vfunc
-
-
-vmap = partial(nmap, functorch.vmap)
+over = lambda name: lens.Iso(lambda t:t.unbind(name), lambda ts:nstack(*ts, name=name)).Each()
+torch.Tensor.over = lambda self, name: bind(self) & over(name)
     
 
 def index(input, s, name):
-    if hasattr(s, "names"):
-        s = s.rename(None)
-    slices = [s if n == name else slice(None) for n in input.names]
-    return input.rename(None)[slices].rename(*input.names)
-
+    return lift_nameless(lambda t, slices:t[slices])(input,
+        [s if n == name else slice(None) for n in input.names])
 
 torch.Tensor.index = index
 
 
-def unify(input, other):
-    if input is None:
-        return other
-    assert len(input) == len(other)
-    def name_unify(i, o):
-        if i is None: return o
-        if o is None: return i
-        assert i==o
-        return i
-    return [name_unify(i, o) for i, o in zip(input, other)]
-
-
+torch.Tensor._tmp_names = None
 def lift_nameless(func, out_names=None, **renames):
+    @wraps(func)
     def wrapped(*args, **kwargs):
-        def traverse(f, input):
-            lens.Instance(torch.Tensor).modify(f)(input)
-            lens.Fork(
-                lens.Instance((list, tuple)).Each(),
-                lens.Instance(dict).Each()[1],
-            ).modify(partial(traverse, f))(input)
-        
-        names = out_names
-
-        def save_name(input):
-            if out_names is None:
-                nonlocal names
-                names = unify(names, input.names)
-            input._tmp_names = input.names
-
-        def strip_name(input):
-            input.rename_(None)
-        
-        def return_name(input):
-            input.rename_(*input._tmp_names)
-        
-        traverse(save_name, [args, kwargs])
-        traverse(strip_name, [args, kwargs])
+        bound = bind([args, kwargs]).Recur(torch.Tensor)
+        def move(src, tgt, x):
+            setattr(x, tgt, getattr(x,src))
+            setattr(x, src, None)
+        bound.modify(partial(move, "names", "_tmp_names"))
         output = func(*args, **kwargs)
-        traverse(return_name, [args, kwargs])
+        bound.modify(partial(move, "_tmp_names", "names"))
+        names = bound.get().names if out_names is None else out_names
         names = chain(*(renames.get(k, [k]) for k in names))
         return lens.Instance(torch.Tensor).call_refine_names(*names, ...)(output)
 
     return wrapped
 
 
-def nstack(*tensors, name=None):
-    return lift_nameless(torch.stack)(tensors, dim=0).refine_names(name, ...)
-
-
-torch.Tensor.nsize = lambda self: {n: s for n, s in zip(self.names, self.shape)}
-
-
-def GA(attr):
-    def setter(x, y):
-        x.__setattr__(attr, y)
-        return x
-    return lens.Lens(lambda x: x.__getattribute__(attr), setter)
-
-
 def neinsum(input, other, **instructions):
-    
-    other = other.rename(**{
-        name: name + "1" for name, i in instructions.items() if i == 2
-    })
+    renames = {n: n + "1" for n, i in instructions.items() if i == 2}
+    other = other.rename(**renames) if renames else other
 
     # matmul <=> abc, acd -> abd
-    left = set(input.nsize().items())
-    right = set(other.nsize().items())
-    batch = {(n, input.size(n)) for n in instructions}
-    a = dict(left & right & batch)
-    b = dict(left - right)
-    c = dict(left & right - batch)
-    d = dict(right - left)
-    abc = input.clone().flatten(tuple(a), "a").flatten(tuple(b), "b").flatten(tuple(c), "c").align_to("a", "b", "c")
-    acd = other.clone().flatten(tuple(a), "a").flatten(tuple(c), "c").flatten(tuple(d), "d").align_to("a", "c", "d")
-    abd = abc @ acd
+    left = set(zip(input.names, input.shape))
+    right = set(zip(other.names, other.shape))
+    batch = {(n, input.size(n)) for n, i in instructions.items() if i == 1}
+    a = left & right & batch
+    b = left - right
+    c = left & right - batch
+    d = right - left
+    abc = input.nflatten(a=a,b=b,c=c)
+    acd = other.nflatten(a=a,c=c,d=d)
+    return (abc @ acd).nunflatten(a=a,b=b,d=d)
 
-    return abd.unflatten("a", tuple(a.items())).unflatten("b", tuple(b.items())).unflatten("d", tuple(d.items()))
+
+def nflatten(self, **kwargs):
+    for name,olds in kwargs.items():
+        olds = tuple(bind(olds).Recur(str).Parts().get())
+        self = self.align_to(..., *olds).flatten(olds, name) if olds else self.rename(None).unsqueeze(-1).rename(*self.names, name)
+    return self
+
+def nunflatten(self, **kwargs):
+    for name,news in kwargs.items():
+        news = tuple(bind(news).Each().Parts().get())
+        self = self.unflatten(name, news) if news else self.squeeze(name)
+    return self
+
+torch.Tensor.nflatten = nflatten
+torch.Tensor.nunflatten = nunflatten
 
 
 def ndiagonal(input, offset=0, **join_names):
@@ -158,10 +84,3 @@ def ndiagonal(input, offset=0, **join_names):
 
     output = input.diagonal(offset=offset, dim1=get_dim(name1), dim2=get_dim(name2)).rename(*out_names)
     return ndiagonal(output, offset=offset, **join_names)
-
-
-def unsqueeze(input, dim, name=None):
-    out_names = input.names[:dim] + (name,) + input.names[dim:]
-    return input.rename(None).unsqueeze(dim).rename(*out_names)
-
-torch.Tensor.nunsqueeze = unsqueeze
