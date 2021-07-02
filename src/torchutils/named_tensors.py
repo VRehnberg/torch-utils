@@ -7,13 +7,12 @@ import torch
 def nstack(*tensors, name=None):
     return lift_nameless(torch.stack)(tensors, dim=0).refine_names(name, ...)
 
-over = lambda name: lens.Iso(lambda t:t.unbind(name), lambda ts:nstack(*ts, name=name)).Each()
-torch.Tensor.over = lambda self, name: bind(self) & over(name)
-    
 
 def index(input, s, name):
-    return lift_nameless(lambda t, slices:t[slices])(input,
-        [s if n == name else slice(None) for n in input.names])
+    return lift_nameless(lambda t, slices:t[slices])(input, [
+        s if n == name else slice(None) for n in input.names
+    ])
+
 
 torch.Tensor.index = index
 
@@ -59,11 +58,13 @@ def nflatten(self, **kwargs):
         self = self.align_to(..., *olds).flatten(olds, name) if olds else self.rename(None).unsqueeze(-1).rename(*self.names, name)
     return self
 
+
 def nunflatten(self, **kwargs):
     for name,news in kwargs.items():
         news = tuple(bind(news).Each().Parts().get())
         self = self.unflatten(name, news) if news else self.squeeze(name)
     return self
+
 
 torch.Tensor.nflatten = nflatten
 torch.Tensor.nunflatten = nunflatten
