@@ -36,7 +36,7 @@ def add_sublabels(axis, ticks, ticklabels, level, previous_label="", loc=None):
     # Add sublabel lines
     ax = axis.axes
     sgn = 1 if loc in ["right", "top"] else -1
-    offset = 0.1 * sgn * level + (1 if loc in ["right", "top"] else 0)
+    offset = 0.12 * sgn * level + (1 if loc in ["right", "top"] else 0)
     if isinstance(axis, XAxis):
         trans = ax.get_xaxis_transform()
         get_xy = lambda pos: (pos, offset)
@@ -56,15 +56,6 @@ def add_sublabels(axis, ticks, ticklabels, level, previous_label="", loc=None):
         get_plot_xy = lambda start, stop, offset: ([offset, offset], [start + dy, stop - dy])
         rotation = "vertical"
 
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    for start, stop, ticklabel in zip(ticks[:-1], ticks[1:], ticklabels):
-        pos = (start + stop) / 2
-        ax.annotate(ticklabel, xy=get_xy(pos), xycoords=trans, ha=ha, va=va, rotation=rotation)
-        ax.plot(*get_plot_xy(start, stop, offset), color="grey", transform=trans, clip_on=False)
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-
     def ra(a):
         if a == "left":
             return "right"
@@ -76,8 +67,11 @@ def add_sublabels(axis, ticks, ticklabels, level, previous_label="", loc=None):
             return "bottom"
         return a
     
-    pos = (max(lim) - min(lim)) / 2
-    ax.annotate(previous_label, xy=get_xy(pos), transform=trans, ha=ra(ha), va=ra(va), rotation=rotation)
+    for start, stop, ticklabel in zip(ticks[:-1], ticks[1:], ticklabels):
+        pos = (start + stop) / 2
+        ax.annotate(ticklabel, xy=get_xy(pos), xycoords=trans, ha=ha, va=va, rotation=rotation)
+        ax.annotate(previous_label, xy=get_xy(pos), xycoords=trans, ha=ra(ha), va=ra(va), rotation=rotation)
+        ax.plot(*get_plot_xy(start, stop, offset), color="grey", transform=trans, clip_on=False)
     
 
 def tensorshow(tensor, xdims, ydims, fignum=None):
@@ -103,6 +97,11 @@ def tensorshow(tensor, xdims, ydims, fignum=None):
 
     # Add hierarchical axes labels
     def add_labels(axis, dims, level=0):
+        if level == len(dims):
+            if isinstance(axis, XAxis):
+                ax.set_xlabel(dims[0])
+            else:
+                ax.set_ylabel(dims[0])
         if level >= len(dims):
             return
             
@@ -125,9 +124,6 @@ def tensorshow(tensor, xdims, ydims, fignum=None):
                 loc="top" if isinstance(axis, XAxis) else "left",
             )
         
-        if level == len(dims):
-            axis.set_label(dims[0])
-
         return add_labels(axis, dims, level=level + 1)
 
         
