@@ -1,38 +1,50 @@
 from functools import partial, wraps
 from itertools import chain
 from lenses import lens, bind
+import lenses.hooks
+from lenses.optics import Setter
 import torch
 
 
 def nstack(*tensors, name=None):
     return lift_nameless(torch.stack)(tensors, dim=0).refine_names(name, ...)
 
+over = lambda name: lens.Iso(lambda t:t.unbind(name), lambda ts:nstack(*ts, name=name)).Each()
+torch.Tensor.over = lambda self, name: bind(self) & over(name)
+    
 
 def index(input, s, name):
-    return lift_nameless(lambda t, slices:t[slices])(input, [
-        s if n == name else slice(None) for n in input.names
-    ])
-
+    return lift_nameless(lambda t, slices:t[slices])(input,
+        [s if n == name else slice(None) for n in input.names])
 
 torch.Tensor.index = index
 
 
-torch.Tensor._tmp_names = None
-def lift_nameless(func, out_names=None, **renames):
+@lenses.hooks.setattr.register
+def _(self: torch.Tensor, name, value):
+    setattr(self, name, value)
+    return self # Cheating: Mutates in-place!
+
+
+def lift_nameless(func, out=None, add=None, **renames):
     @wraps(func)
     def wrapped(*args, **kwargs):
-        bound = bind([args, kwargs]).Recur(torch.Tensor)
-        def move(src, tgt, x):
-            setattr(x, tgt, getattr(x,src))
-            setattr(x, src, None)
-        bound.modify(partial(move, "names", "_tmp_names"))
+        namess = bind([args, kwargs]).Recur(torch.Tensor).names
+        saved = namess.collect()
+        namess.set(None)
         output = func(*args, **kwargs)
-        bound.modify(partial(move, "_tmp_names", "names"))
-        names = bound.get().names if out_names is None else out_names
-        names = chain(*(renames.get(k, [k]) for k in names))
-        return lens.Instance(torch.Tensor).call_refine_names(*names, ...)(output)
-
+        namess.set_many(saved)
+        names = saved[0] if out is None else out
+        names = chain(*(renames.get(k, [k]) for k in names), bind(add).Recur(str).collect())
+        return bind(output).Instance(torch.Tensor).call_refine_names(*names)
     return wrapped
+
+class Nameless(Setter):
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.args = args
+    def func(self, f, state):
+        return lift_nameless(f, *args, **kwargs)(state, *args, **kwargs)
 
 
 def neinsum(input, other, **instructions):
@@ -54,17 +66,15 @@ def neinsum(input, other, **instructions):
 
 def nflatten(self, **kwargs):
     for name,olds in kwargs.items():
-        olds = tuple(bind(olds).Recur(str).Parts().get())
+        olds = tuple(bind(olds).Recur(str).collect())
         self = self.align_to(..., *olds).flatten(olds, name) if olds else self.rename(None).unsqueeze(-1).rename(*self.names, name)
     return self
 
-
 def nunflatten(self, **kwargs):
     for name,news in kwargs.items():
-        news = tuple(bind(news).Each().Parts().get())
+        news = tuple(bind(news).Each().collect())
         self = self.unflatten(name, news) if news else self.squeeze(name)
     return self
-
 
 torch.Tensor.nflatten = nflatten
 torch.Tensor.nunflatten = nunflatten
