@@ -7,7 +7,8 @@ import torch
 
 
 def nstack(*tensors, name=None):
-    return lift_nameless(torch.stack)(tensors, dim=0).refine_names(name, ...)
+    return lift_nameless(torch.stack, add=name)(tensors, dim=-1)
+
 
 over = lambda name: lens.Iso(lambda t:t.unbind(name), lambda ts:nstack(*ts, name=name)).Each()
 torch.Tensor.over = lambda self, name: bind(self) & over(name)
@@ -16,6 +17,7 @@ torch.Tensor.over = lambda self, name: bind(self) & over(name)
 def index(input, s, name):
     return lift_nameless(lambda t, slices:t[slices])(input,
         [s if n == name else slice(None) for n in input.names])
+
 
 torch.Tensor.index = index
 
@@ -36,8 +38,9 @@ def lift_nameless(func, out=None, add=None, **renames):
         namess.set_many(saved)
         names = saved[0] if out is None else out
         names = chain(*(renames.get(k, [k]) for k in names), bind(add).Recur(str).collect())
-        return bind(output).Instance(torch.Tensor).call_refine_names(*names)
+        return bind(output).Recur(torch.Tensor).Filter(lambda t: t.ndim).call_rename_(*names)
     return wrapped
+
 
 class Nameless(Setter):
     def __init__(self, *args, **kwargs):
